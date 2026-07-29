@@ -1,0 +1,86 @@
+name: Build Unsigned IPA
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+
+jobs:
+  build:
+    runs-on: macos-15
+
+    steps:
+      - name: Check out project
+        uses: actions/checkout@v4
+
+      - name: Install XcodeGen
+        run: brew install xcodegen
+
+      - name: Find project root
+        id: project
+        shell: bash
+        run: |
+          set -e
+
+          if [ -f "project.yml" ]; then
+            echo "dir=." >> "$GITHUB_OUTPUT"
+          elif [ -f "PillOverlay/project.yml" ]; then
+            echo "dir=PillOverlay" >> "$GITHUB_OUTPUT"
+          else
+            echo "Could not find project.yml"
+            find . -maxdepth 3 -type f | sort
+            exit 1
+          fi
+
+      - name: Generate Xcode project
+        working-directory: ${{ steps.project.outputs.dir }}
+        run: xcodegen generate
+
+      - name: Build unsigned app
+        working-directory: ${{ steps.project.outputs.dir }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf build
+          mkdir -p build/Payload
+
+          xcodebuild \
+            -project PillOverlay.xcodeproj \
+            -scheme PillOverlay \
+            -configuration Release \
+            -sdk iphoneos \
+            -derivedDataPath build/DerivedData \
+            CODE_SIGNING_ALLOWED=NO \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGN_IDENTITY="" \
+            build
+
+          APP_PATH="$(find build/DerivedData/Build/Products/Release-iphoneos \
+            -maxdepth 1 \
+            -name '*.app' \
+            -type d \
+            | head -n 1)"
+
+          if [ -z "$APP_PATH" ]; then
+            echo "No compiled .app was found."
+            find build/DerivedData/Build/Products -maxdepth 4 -type d
+            exit 1
+          fi
+
+          cp -R "$APP_PATH" build/Payload/
+
+          cd build
+          zip -qry PillOverlay-unsigned.ipa Payload
+
+          test -f PillOverlay-unsigned.ipa
+          echo "Created PillOverlay-unsigned.ipa"
+
+      - name: Upload unsigned IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: PillOverlay-unsigned-ipa
+          path: ${{ steps.project.outputs.dir }}/build/PillOverlay-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 7
